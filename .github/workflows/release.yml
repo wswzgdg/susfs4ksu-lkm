@@ -42,15 +42,18 @@ jobs:
       - name: Rename .ko files to KMI format
         run: |
           set -euo pipefail
-          cd assets
-          for d in susfs_guard_lkm.ko-*/; do
-            kmi="${d%/}"
-            kmi="${kmi#susfs_guard_lkm.ko-}"
+          for d in assets/susfs_guard_lkm.ko-*/; do
+            [ -d "$d" ] || continue
+            kmi="${d#assets/susfs_guard_lkm.ko-}"
+            kmi="${kmi%/}"
             mv "$d/susfs_guard_lkm.ko" "ko/susfs_guard_lkm-$kmi.ko"
             rmdir "$d" 2>/dev/null || true
           done
-          if [ -f susfs_insmod ]; then
-            mv susfs_insmod bin/
+          if [ -f assets/susfs_insmod ]; then
+            mv assets/susfs_insmod bin/
+          elif [ -f assets/susfs_insmod/susfs_insmod ]; then
+            mv assets/susfs_insmod/susfs_insmod bin/
+            rmdir assets/susfs_insmod 2>/dev/null || true
           fi
           ls -la ko/ bin/
 
