@@ -137,10 +137,47 @@ static struct sus_map_spoof_rule spoof_rules[SUS_MAP_SPOOF_MAX];
 static int nspoof;
 static DEFINE_SPINLOCK(spoof_table_lock);
 
+/* VMA neighbor helpers — vm_next/vm_prev removed in 6.6 (maple tree). */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+static struct vm_area_struct *spoof_vma_next(struct vm_area_struct *vma,
+                                              struct mm_struct *mm)
+{
+    struct vma_iterator vma_iter;
+    vma_iter_init(&vma_iter, mm, vma->vm_end);
+    return vma_iter_next(&vma_iter);
+}
+
+static struct vm_area_struct *spoof_vma_prev(struct vm_area_struct *vma,
+                                              struct mm_struct *mm)
+{
+    struct vma_iterator vma_iter;
+    struct vm_area_struct *cur, *prev = NULL;
+    vma_iter_init(&vma_iter, mm, 0);
+    while ((cur = vma_iter_next(&vma_iter)) != NULL) {
+        if (cur == vma)
+            return prev;
+        prev = cur;
+    }
+    return NULL;
+}
+#else
+static inline struct vm_area_struct *spoof_vma_next(struct vm_area_struct *vma,
+                                                     struct mm_struct *mm)
+{
+    return vma->vm_next;
+}
+static inline struct vm_area_struct *spoof_vma_prev(struct vm_area_struct *vma,
+                                                     struct mm_struct *mm)
+{
+    return vma->vm_prev;
+}
+#endif
+
 /* Match a VMA against the spoof rule table.  Returns the rule index or -1. */
-static int sus_map_spoof_match(struct vm_area_struct *vma, unsigned long ino,
-                               dev_t dev, unsigned long addr_size,
-                               vm_flags_t flags, unsigned long long pgoff)
+static int sus_map_spoof_match(struct vm_area_struct *vma, struct mm_struct *mm,
+                               unsigned long ino, dev_t dev,
+                               unsigned long addr_size, vm_flags_t flags,
+                               unsigned long long pgoff)
 {
     int n = smp_load_acquire(&nspoof);
     int i;
@@ -169,25 +206,29 @@ static int sus_map_spoof_match(struct vm_area_struct *vma, unsigned long ino,
                 break;
             /* isolated_entry check: adjacent VMA must not share the same inode */
             if (r->is_isolated_entry) {
-                if (vma->vm_next && vma->vm_next->vm_file) {
-                    struct inode *ni = file_inode(vma->vm_next->vm_file);
+                struct vm_area_struct *nxt = spoof_vma_next(vma, mm);
+                struct vm_area_struct *prv = spoof_vma_prev(vma, mm);
+                if (nxt && nxt->vm_file) {
+                    struct inode *ni = file_inode(nxt->vm_file);
                     if (ni && ni->i_ino == r->target_ino)
                         break;
                 }
-                if (vma->vm_prev && vma->vm_prev->vm_file) {
-                    struct inode *pi = file_inode(vma->vm_prev->vm_file);
+                if (prv && prv->vm_file) {
+                    struct inode *pi = file_inode(prv->vm_file);
                     if (pi && pi->i_ino == r->target_ino)
                         break;
                 }
             } else {
                 /* non-isolated: adjacent VMA must share the same inode */
-                if (vma->vm_next && vma->vm_next->vm_file) {
-                    struct inode *ni = file_inode(vma->vm_next->vm_file);
+                struct vm_area_struct *nxt = spoof_vma_next(vma, mm);
+                struct vm_area_struct *prv = spoof_vma_prev(vma, mm);
+                if (nxt && nxt->vm_file) {
+                    struct inode *ni = file_inode(nxt->vm_file);
                     if (ni && ni->i_ino == r->target_ino)
                         return i;
                 }
-                if (vma->vm_prev && vma->vm_prev->vm_file) {
-                    struct inode *pi = file_inode(vma->vm_prev->vm_file);
+                if (prv && prv->vm_file) {
+                    struct inode *pi = file_inode(prv->vm_file);
                     if (pi && pi->i_ino == r->target_ino)
                         return i;
                 }
@@ -198,23 +239,26 @@ static int sus_map_spoof_match(struct vm_area_struct *vma, unsigned long ino,
             if (vma->vm_file || (!r->next_target_ino && !r->prev_target_ino))
                 break;
             if (r->prev_target_ino > 0 && r->next_target_ino > 0) {
-                if (vma->vm_prev && vma->vm_prev->vm_file &&
-                    vma->vm_next && vma->vm_next->vm_file) {
-                    struct inode *pi = file_inode(vma->vm_prev->vm_file);
-                    struct inode *ni = file_inode(vma->vm_next->vm_file);
+                struct vm_area_struct *nxt = spoof_vma_next(vma, mm);
+                struct vm_area_struct *prv = spoof_vma_prev(vma, mm);
+                if (prv && prv->vm_file && nxt && nxt->vm_file) {
+                    struct inode *pi = file_inode(prv->vm_file);
+                    struct inode *ni = file_inode(nxt->vm_file);
                     if (pi && ni && pi->i_ino == r->prev_target_ino &&
                         ni->i_ino == r->next_target_ino)
                         return i;
                 }
             } else if (r->next_target_ino > 0) {
-                if (vma->vm_next && vma->vm_next->vm_file) {
-                    struct inode *ni = file_inode(vma->vm_next->vm_file);
+                struct vm_area_struct *nxt = spoof_vma_next(vma, mm);
+                if (nxt && nxt->vm_file) {
+                    struct inode *ni = file_inode(nxt->vm_file);
                     if (ni && ni->i_ino == r->next_target_ino)
                         return i;
                 }
             } else {
-                if (vma->vm_prev && vma->vm_prev->vm_file) {
-                    struct inode *pi = file_inode(vma->vm_prev->vm_file);
+                struct vm_area_struct *prv = spoof_vma_prev(vma, mm);
+                if (prv && prv->vm_file) {
+                    struct inode *pi = file_inode(prv->vm_file);
                     if (pi && pi->i_ino == r->prev_target_ino)
                         return i;
                 }
@@ -407,7 +451,7 @@ static int map_spoof_ret(struct kretprobe_instance *ri,
     addr_size = vma->vm_end - vma->vm_start;
     pgoff = vma->vm_pgoff << PAGE_SHIFT;
 
-    ri_idx = sus_map_spoof_match(vma, ino, dev, addr_size, flags, pgoff);
+    ri_idx = sus_map_spoof_match(vma, current->mm, ino, dev, addr_size, flags, pgoff);
     if (ri_idx < 0)
         return 0;
 
