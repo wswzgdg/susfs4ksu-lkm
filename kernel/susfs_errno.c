@@ -37,9 +37,7 @@ MODULE_PARM_DESC(errno_enable, "Enable errno spoofing for app-uid callers");
 enum susfs_errno_family {
 	SUSFS_FAMILY_ALL_ENOENT,
 	SUSFS_FAMILY_OPENAT,
-	SUSFS_FAMILY_MKNOD,
 	SUSFS_FAMILY_MKDIRAT,
-	SUSFS_FAMILY_RMDIR,
 	SUSFS_FAMILY_UNLINKAT,
 	SUSFS_FAMILY_SYMLINKAT_NEWNAME,
 	SUSFS_FAMILY_LINKAT_OLDNAME,
@@ -102,11 +100,9 @@ static int susfs_errno_errno_for(int pfx, int family)
     case 4: /* /data/ */
         switch (family) {
         case SUSFS_FAMILY_ALL_ENOENT:
-        case SUSFS_FAMILY_RMDIR:
         case SUSFS_FAMILY_UNLINKAT:
         case SUSFS_FAMILY_LINKAT_OLDNAME:
             return -ENOENT;
-        case SUSFS_FAMILY_MKNOD:
         case SUSFS_FAMILY_MKDIRAT:
         case SUSFS_FAMILY_SYMLINKAT_NEWNAME:
             return -EACCES;
@@ -188,20 +184,10 @@ static susfs_syscall_fn_t errno_orig_openat2;
 SUSFS_ERRNO_WRAPPER(errno_wrap_openat2, errno_orig_openat2, 1,
                     SUSFS_FAMILY_OPENAT)
 
-/* mknod: regs[0] = filename */
-static susfs_syscall_fn_t errno_orig_mknod;
-SUSFS_ERRNO_WRAPPER(errno_wrap_mknod, errno_orig_mknod, 0,
-                    SUSFS_FAMILY_MKNOD)
-
 /* mkdirat: regs[1] = pathname */
 static susfs_syscall_fn_t errno_orig_mkdirat;
 SUSFS_ERRNO_WRAPPER(errno_wrap_mkdirat, errno_orig_mkdirat, 1,
                     SUSFS_FAMILY_MKDIRAT)
-
-/* rmdir: regs[0] = pathname */
-static susfs_syscall_fn_t errno_orig_rmdir;
-SUSFS_ERRNO_WRAPPER(errno_wrap_rmdir, errno_orig_rmdir, 0,
-                    SUSFS_FAMILY_RMDIR)
 
 /* unlinkat: regs[1] = pathname */
 static susfs_syscall_fn_t errno_orig_unlinkat;
@@ -279,15 +265,9 @@ static struct susfs_fp_hook errno_hooks[] = {
     { .nr = __NR_openat2,  .name = "errno/openat2",
       .sym = "__arm64_sys_openat2",
       .wrapper = errno_wrap_openat2, .orig_slot = &errno_orig_openat2 },
-    { .nr = __NR_mknod,    .name = "errno/mknod",
-      .sym = "__arm64_sys_mknod",
-      .wrapper = errno_wrap_mknod, .orig_slot = &errno_orig_mknod },
     { .nr = __NR_mkdirat,  .name = "errno/mkdirat",
       .sym = "__arm64_sys_mkdirat",
       .wrapper = errno_wrap_mkdirat, .orig_slot = &errno_orig_mkdirat },
-    { .nr = __NR_rmdir,    .name = "errno/rmdir",
-      .sym = "__arm64_sys_rmdir",
-      .wrapper = errno_wrap_rmdir, .orig_slot = &errno_orig_rmdir },
     { .nr = __NR_unlinkat, .name = "errno/unlinkat",
       .sym = "__arm64_sys_unlinkat",
       .wrapper = errno_wrap_unlinkat, .orig_slot = &errno_orig_unlinkat },

@@ -32,6 +32,8 @@
 #include "ksu_umount_gate.h"	/* susfs_is_current_proc_umounted_app (issue #34) */
 #include "susfs_kprobe.h"
 
+static bool sus_map_gate_ok(void);
+
 #define SUS_MAP_MAX 64
 
 struct sus_map_entry {

@@ -16,6 +16,7 @@
 #include <linux/errno.h>
 #include <linux/types.h>
 #include "susfs_abi.h"
+#include "susfs.h"	/* susfs_abi_path_ok */
 #include "susfs_log.h"
 
 #define SUSFS_MEMFD_MAX 32

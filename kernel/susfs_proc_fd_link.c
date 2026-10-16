@@ -23,6 +23,7 @@
 #include <linux/err.h>
 #include <linux/types.h>
 #include "susfs_abi.h"
+#include "susfs.h"	/* susfs_abi_path_ok */
 #include "susfs_log.h"
 #include "ksu_umount_gate.h"
 #include "susfs_kprobe.h"
