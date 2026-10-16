@@ -137,23 +137,25 @@ static struct sus_map_spoof_rule spoof_rules[SUS_MAP_SPOOF_MAX];
 static int nspoof;
 static DEFINE_SPINLOCK(spoof_table_lock);
 
-/* VMA neighbor helpers — vm_next/vm_prev removed in 6.6 (maple tree). */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+/* VMA neighbor helpers — vm_next/vm_prev removed in 6.1+ (maple tree). */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
 static struct vm_area_struct *spoof_vma_next(struct vm_area_struct *vma,
                                               struct mm_struct *mm)
 {
-    struct vma_iterator vma_iter;
-    vma_iter_init(&vma_iter, mm, vma->vm_end);
-    return vma_iter_next(&vma_iter);
+    VMA_ITERATOR(vmi, mm, vma->vm_end);
+    struct vm_area_struct *nxt;
+    for_each_vma(vmi, nxt) {
+        return nxt;
+    }
+    return NULL;
 }
 
 static struct vm_area_struct *spoof_vma_prev(struct vm_area_struct *vma,
                                               struct mm_struct *mm)
 {
-    struct vma_iterator vma_iter;
     struct vm_area_struct *cur, *prev = NULL;
-    vma_iter_init(&vma_iter, mm, 0);
-    while ((cur = vma_iter_next(&vma_iter)) != NULL) {
+    VMA_ITERATOR(vmi, mm, 0);
+    for_each_vma(vmi, cur) {
         if (cur == vma)
             return prev;
         prev = cur;
