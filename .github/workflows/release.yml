@@ -1,0 +1,92 @@
+# SPDX-License-Identifier: GPL-2.0-only
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v2.3.0-r1)'
+        required: true
+        type: string
+      run_id:
+        description: 'Build run ID from build-lkm-ddk workflow'
+        required: true
+        type: string
+      prerelease:
+        description: 'Mark as prerelease'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  upload-assets:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download build artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p assets ko bin
+          gh run download "$RUN_ID" -R "${{ github.repository }}" \
+            --pattern 'susfs_guard_lkm.ko-*' --pattern 'susfs_insmod' \
+            --dir assets
+          ls -laR assets
+
+      - name: Rename .ko files to KMI format
+        run: |
+          set -euo pipefail
+          cd assets
+          for d in susfs_guard_lkm.ko-*/; do
+            kmi="${d%/}"
+            kmi="${kmi#susfs_guard_lkm.ko-}"
+            mv "$d/susfs_guard_lkm.ko" "ko/susfs_guard_lkm-$kmi.ko"
+            rmdir "$d" 2>/dev/null || true
+          done
+          if [ -f susfs_insmod ]; then
+            mv susfs_insmod bin/
+          fi
+          ls -la ko/ bin/
+
+      - name: Create or update release
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag }}"
+          if gh release view "$TAG" &>/dev/null; then
+            echo "Release $TAG exists; updating"
+            gh release edit "$TAG" --title "$TAG" --notes "susfs_guard_lkm $TAG" \
+              ${PRERELEASE:+--prerelease} 2>/dev/null || true
+          else
+            echo "Creating release $TAG"
+            args=(create "$TAG" --title "$TAG" --notes "susfs_guard_lkm $TAG")
+            if [ "${{ inputs.prerelease }}" = "true" ]; then
+              args+=(--prerelease)
+            fi
+            gh release "${args[@]}"
+          fi
+
+      - name: Upload .ko assets
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag }}"
+          gh release upload "$TAG" ko/susfs_guard_lkm-*.ko --repo "${{ github.repository }}" --clobber
+          if [ -f bin/susfs_insmod ]; then
+            gh release upload "$TAG" bin/susfs_insmod --repo "${{ github.repository }}" --clobber
+          fi
+          echo "Uploaded release assets for $TAG"
+
+      - name: Build module ZIP
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag }}"
+          pip install --quiet python-dateutil
+          python tools/pack_module.py --ko-dir ko --insmod bin/susfs_insmod \
+            --tag "$TAG" --out "dist/susfs_guard_lkm-module-$TAG-arm64.zip"
+          gh release upload "$TAG" dist/*.zip --repo "${{ github.repository }}" --clobber
+          echo "Uploaded module ZIP for $TAG"
