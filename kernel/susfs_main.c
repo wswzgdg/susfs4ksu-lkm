@@ -125,6 +125,12 @@ static struct {
     { "avc_spoof",	susfs_avc_spoof_init,		susfs_avc_spoof_exit,	false, false },
     { "supercall",	susfs_supercall_init,		susfs_supercall_exit,	true,  false },
     { "hide_syms",	susfs_hide_syms_init,		susfs_hide_syms_exit,	false, false },
+    /* Errno spoofing: hooks syscall entries to return EROFS/ENOENT for /system, /vendor, etc. */
+    { "errno",		susfs_errno_init,		susfs_errno_exit,	false, false },
+    /* memfd name blocking: kprobes memfd_create and blocks specific names. */
+    { "memfd",		susfs_memfd_init,		susfs_memfd_exit,	false, false },
+    /* Independent /proc/self/fd/N symlink spoofing via d_path() kretprobe. */
+    { "pfld",		susfs_proc_fd_link_init,	susfs_proc_fd_link_exit, false, false },
 };
 
 /* Diagnostic: make one layer's init fail, by 1-based index, to exercise the rollback path

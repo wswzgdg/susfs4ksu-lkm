@@ -86,6 +86,10 @@ static const struct feature_entry enabled_features[] = {
 	{ "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG\n", NULL },
 	{ "CONFIG_KSU_SUSFS_OPEN_REDIRECT\n",	NULL },
 	{ "CONFIG_KSU_SUSFS_SUS_MAP\n",		NULL },
+	{ "CONFIG_KSU_SUSFS_SUS_MAP_STATICALLY\n",	NULL },
+	{ "CONFIG_KSU_SUSFS_SUS_ERROR_NO\n",	susfs_errno_active },
+	{ "CONFIG_KSU_SUSFS_ADD_SUS_MEMFD\n",	susfs_memfd_active },
+	{ "CONFIG_KSU_SUSFS_PROC_FD_LINK\n",	susfs_proc_fd_link_active },
 	/* hide_modules is not upstream's, so it is not listed here - the feature itself is unchanged. */
 };
 
@@ -154,6 +158,9 @@ static void susfs_tw_func(struct callback_head *cb)
 	case CMD_SUSFS_ADD_SUS_MAP:
 		susfs_sus_map_supercall(&arg);
 		break;
+	case CMD_SUSFS_ADD_SUS_MAP_STATICALLY:
+		susfs_sus_map_static_supercall(&arg);
+		break;
 	case CMD_SUSFS_ADD_SUS_KSTAT:
 	case CMD_SUSFS_UPDATE_SUS_KSTAT:
 	case CMD_SUSFS_ADD_SUS_KSTAT_STATICALLY:
@@ -176,6 +183,14 @@ static void susfs_tw_func(struct callback_head *cb)
 		break;
 	case CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS:
 		susfs_sus_mount_supercall(&arg);
+		break;
+	case CMD_SUSFS_ADD_SUS_MEMFD:
+	case CMD_SUSFS_DEL_SUS_MEMFD:
+		susfs_memfd_supercall(tw->cmd, &arg);
+		break;
+	case CMD_SUSFS_ADD_SUS_PROC_FD_LINK:
+	case CMD_SUSFS_DEL_SUS_PROC_FD_LINK:
+		susfs_proc_fd_link_supercall(tw->cmd, &arg);
 		break;
 	default:
 		/* Unreachable: reboot_pre() only defers a command susfs_cmd_handled()
@@ -211,6 +226,7 @@ static bool susfs_cmd_handled(unsigned int cmd)
 	case CMD_SUSFS_ADD_SUS_PATH:
 	case CMD_SUSFS_ADD_SUS_PATH_LOOP:
 	case CMD_SUSFS_ADD_SUS_MAP:
+	case CMD_SUSFS_ADD_SUS_MAP_STATICALLY:
 	case CMD_SUSFS_ADD_SUS_KSTAT:
 	case CMD_SUSFS_UPDATE_SUS_KSTAT:
 	case CMD_SUSFS_ADD_SUS_KSTAT_STATICALLY:
@@ -220,6 +236,10 @@ static bool susfs_cmd_handled(unsigned int cmd)
 	case CMD_SUSFS_SET_CMDLINE_OR_BOOTCONFIG:
 	case CMD_SUSFS_ADD_OPEN_REDIRECT:
 	case CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS:
+	case CMD_SUSFS_ADD_SUS_MEMFD:
+	case CMD_SUSFS_DEL_SUS_MEMFD:
+	case CMD_SUSFS_ADD_SUS_PROC_FD_LINK:
+	case CMD_SUSFS_DEL_SUS_PROC_FD_LINK:
 		return true;
 	default:
 		return false;
@@ -346,6 +366,34 @@ static void __init susfs_abi_layout_check(void)
 
 	BUILD_BUG_ON(sizeof(struct st_susfs_enabled_features) != 8196);
 	BUILD_BUG_ON(offsetof(struct st_susfs_enabled_features, err) != 8192);
+
+	BUILD_BUG_ON(sizeof(struct st_susfs_sus_memfd) != 260);
+	BUILD_BUG_ON(offsetof(struct st_susfs_sus_memfd, err) != 256);
+
+	BUILD_BUG_ON(sizeof(struct st_susfs_sus_proc_fd_link) != 520);
+	BUILD_BUG_ON(offsetof(struct st_susfs_sus_proc_fd_link, err) != 516);
+
+	BUILD_BUG_ON(sizeof(struct st_susfs_sus_map_static) != 368);
+	BUILD_BUG_ON(offsetof(struct st_susfs_sus_map_static, is_statically) != 0);
+	BUILD_BUG_ON(offsetof(struct st_susfs_sus_map_static, compare_mode) != 4);
+	BUILD_BUG_ON(offsetof(struct st_susfs_sus_map_static, is_isolated_entry) != 8);
+	BUILD_BUG_ON(offsetof(struct st_susfs_sus_map_static, is_file) != 12);
+	BUILD_BUG_ON(offsetof(struct st_susfs_sus_map_static, target_ino) != 16);
+	BUILD_BUG_ON(offsetof(struct st_susfs_sus_map_static, target_dev) != 24);
+	BUILD_BUG_ON(offsetof(struct st_susfs_sus_map_static, target_pgoff) != 32);
+	BUILD_BUG_ON(offsetof(struct st_susfs_sus_map_static, target_prot) != 40);
+	BUILD_BUG_ON(offsetof(struct st_susfs_sus_map_static, target_addr_size) != 48);
+	BUILD_BUG_ON(offsetof(struct st_susfs_sus_map_static, spoofed_pathname) != 56);
+	BUILD_BUG_ON(offsetof(struct st_susfs_sus_map_static, spoofed_ino) != 312);
+	BUILD_BUG_ON(offsetof(struct st_susfs_sus_map_static, spoofed_dev) != 320);
+	BUILD_BUG_ON(offsetof(struct st_susfs_sus_map_static, spoofed_pgoff) != 328);
+	BUILD_BUG_ON(offsetof(struct st_susfs_sus_map_static, spoofed_prot) != 336);
+	BUILD_BUG_ON(offsetof(struct st_susfs_sus_map_static, need_to_spoof_pathname) != 344);
+	BUILD_BUG_ON(offsetof(struct st_susfs_sus_map_static, need_to_spoof_ino) != 348);
+	BUILD_BUG_ON(offsetof(struct st_susfs_sus_map_static, need_to_spoof_dev) != 352);
+	BUILD_BUG_ON(offsetof(struct st_susfs_sus_map_static, need_to_spoof_pgoff) != 356);
+	BUILD_BUG_ON(offsetof(struct st_susfs_sus_map_static, need_to_spoof_prot) != 360);
+	BUILD_BUG_ON(offsetof(struct st_susfs_sus_map_static, err) != 364);
 }
 
 int susfs_supercall_init(void)

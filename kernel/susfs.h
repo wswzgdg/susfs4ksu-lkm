@@ -137,16 +137,31 @@ void susfs_avc_spoof_exit(void);
 int susfs_supercall_init(void);
 void susfs_supercall_exit(void);
 
+int susfs_errno_init(void);
+void susfs_errno_exit(void);
+bool susfs_errno_active(void);
+
+int susfs_memfd_init(void);
+void susfs_memfd_exit(void);
+bool susfs_memfd_active(void);
+
+int susfs_proc_fd_link_init(void);
+void susfs_proc_fd_link_exit(void);
+bool susfs_proc_fd_link_active(void);
+
 /* feature supercall handlers (upstream signature: void xxx(void __user **arg)) */
 void susfs_uname_supercall(void __user **arg);
 void susfs_enable_log_supercall(void __user **arg);
 void susfs_avc_spoof_supercall(void __user **arg);
 void susfs_spoof_cmdline_supercall(void __user **arg);
 void susfs_sus_map_supercall(void __user **arg);
+void susfs_sus_map_static_supercall(void __user **arg);
 void sus_path_supercall(unsigned int cmd, void __user **arg);
 void susfs_kstat_supercall(unsigned int cmd, void __user **arg);
 void susfs_open_redirect_supercall(void __user **arg);
 void susfs_sus_mount_supercall(void __user **arg);
+void susfs_memfd_supercall(unsigned int cmd, void __user **arg);
+void susfs_proc_fd_link_supercall(unsigned int cmd, void __user **arg);
 
 int susfs_hide_syms_init(void);
 void susfs_hide_syms_exit(void);

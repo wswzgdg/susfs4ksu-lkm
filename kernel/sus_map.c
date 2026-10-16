@@ -95,6 +95,335 @@ static bool sus_map_lookup(unsigned long ino, dev_t dev)
     return false;
 }
 
+/* ---- static maps-spoof rules (upstream compare_mode 1-4) ----
+ *
+ * Unlike the hide rules above (which skip the line entirely), these rewrite
+ * fields in the already-formatted seq_file line.  The kretprobe on
+ * show_map_vma() runs after the line is written to the buffer; it rewrites
+ * the pathname, ino, dev, pgoff, and prot in place.
+ *
+ * The seq_file layout is stable: buf at offset 24, count at offset 40.
+ */
+
+#define SUS_MAP_SPOOF_MAX 16
+
+struct sus_map_spoof_rule {
+    unsigned long target_ino;
+    unsigned long next_target_ino;
+    unsigned long prev_target_ino;
+    dev_t target_dev;
+    unsigned long long target_pgoff;
+    unsigned long target_prot;
+    unsigned long target_addr_size;
+    int is_file;
+    int is_isolated_entry;
+    int compare_mode;
+    char spoofed_pathname[256];
+    unsigned long spoofed_ino;
+    dev_t spoofed_dev;
+    unsigned long long spoofed_pgoff;
+    unsigned long spoofed_prot;
+    int need_to_spoof_pathname;
+    int need_to_spoof_ino;
+    int need_to_spoof_dev;
+    int need_to_spoof_pgoff;
+    int need_to_spoof_prot;
+    bool active;
+};
+
+static struct sus_map_spoof_rule spoof_rules[SUS_MAP_SPOOF_MAX];
+static int nspoof;
+static DEFINE_SPINLOCK(spoof_table_lock);
+
+/* Match a VMA against the spoof rule table.  Returns the rule index or -1. */
+static int sus_map_spoof_match(struct vm_area_struct *vma, unsigned long ino,
+                               dev_t dev, unsigned long addr_size,
+                               vm_flags_t flags, unsigned long long pgoff)
+{
+    int n = smp_load_acquire(&nspoof);
+    int i;
+
+    if (!n || !sus_map_gate_ok())
+        return -1;
+
+    for (i = 0; i < n; i++) {
+        struct sus_map_spoof_rule *r = &spoof_rules[i];
+        if (!r->active)
+            continue;
+        switch (r->compare_mode) {
+        case 1:
+            if (ino == r->target_ino)
+                return i;
+            break;
+        case 2:
+            if (ino != r->target_ino)
+                break;
+            if (((r->target_prot & VM_READ) != (flags & VM_READ)) ||
+                ((r->target_prot & VM_WRITE) != (flags & VM_WRITE)) ||
+                ((r->target_prot & VM_EXEC) != (flags & VM_EXEC)) ||
+                ((r->target_prot & VM_MAYSHARE) != (flags & VM_MAYSHARE)) ||
+                r->target_addr_size != addr_size ||
+                r->target_pgoff != pgoff)
+                break;
+            /* isolated_entry check: adjacent VMA must not share the same inode */
+            if (r->is_isolated_entry) {
+                if (vma->vm_next && vma->vm_next->vm_file) {
+                    struct inode *ni = file_inode(vma->vm_next->vm_file);
+                    if (ni && ni->i_ino == r->target_ino)
+                        break;
+                }
+                if (vma->vm_prev && vma->vm_prev->vm_file) {
+                    struct inode *pi = file_inode(vma->vm_prev->vm_file);
+                    if (pi && pi->i_ino == r->target_ino)
+                        break;
+                }
+            } else {
+                /* non-isolated: adjacent VMA must share the same inode */
+                if (vma->vm_next && vma->vm_next->vm_file) {
+                    struct inode *ni = file_inode(vma->vm_next->vm_file);
+                    if (ni && ni->i_ino == r->target_ino)
+                        return i;
+                }
+                if (vma->vm_prev && vma->vm_prev->vm_file) {
+                    struct inode *pi = file_inode(vma->vm_prev->vm_file);
+                    if (pi && pi->i_ino == r->target_ino)
+                        return i;
+                }
+                break;
+            }
+            return i;
+        case 3:
+            if (vma->vm_file || (!r->next_target_ino && !r->prev_target_ino))
+                break;
+            if (r->prev_target_ino > 0 && r->next_target_ino > 0) {
+                if (vma->vm_prev && vma->vm_prev->vm_file &&
+                    vma->vm_next && vma->vm_next->vm_file) {
+                    struct inode *pi = file_inode(vma->vm_prev->vm_file);
+                    struct inode *ni = file_inode(vma->vm_next->vm_file);
+                    if (pi && ni && pi->i_ino == r->prev_target_ino &&
+                        ni->i_ino == r->next_target_ino)
+                        return i;
+                }
+            } else if (r->next_target_ino > 0) {
+                if (vma->vm_next && vma->vm_next->vm_file) {
+                    struct inode *ni = file_inode(vma->vm_next->vm_file);
+                    if (ni && ni->i_ino == r->next_target_ino)
+                        return i;
+                }
+            } else {
+                if (vma->vm_prev && vma->vm_prev->vm_file) {
+                    struct inode *pi = file_inode(vma->vm_prev->vm_file);
+                    if (pi && pi->i_ino == r->prev_target_ino)
+                        return i;
+                }
+            }
+            break;
+        case 4:
+            if ((r->is_file && vma->vm_file) ||
+                (!r->is_file && !vma->vm_file)) {
+                if (r->target_dev == dev &&
+                    r->target_pgoff == pgoff &&
+                    ((r->target_prot & VM_READ) == (flags & VM_READ)) &&
+                    ((r->target_prot & VM_WRITE) == (flags & VM_WRITE)) &&
+                    ((r->target_prot & VM_EXEC) == (flags & VM_EXEC)) &&
+                    ((r->target_prot & VM_MAYSHARE) == (flags & VM_MAYSHARE)) &&
+                    r->target_addr_size == addr_size)
+                    return i;
+            }
+            break;
+        }
+    }
+    return -1;
+}
+
+/*
+ * Rewrite fields in the maps line in the seq_file buffer.
+ * Format: %08lx-%08lx %c%c%c%c %08lx %02x:%02x %lu %s\n
+ *   addr(17) perms(4) offset(8) dev(5) ino(var) path(rest)
+ * seq_file: buf at +24, count at +40.
+ */
+struct map_spoof_args {
+    struct seq_file *seq;
+    struct vm_area_struct *vma;
+};
+
+/* Parse and rewrite one field. Returns new length or -1 on failure. */
+static int map_rewrite_field(char *buf, int buflen, int field_start,
+                             int field_end, const char *newval, int newlen)
+{
+    if (field_start < 0 || field_end >= buflen)
+        return -1;
+    if (field_end - field_start < newlen)
+        return -1;
+    memcpy(buf + field_start, newval, newlen);
+    memset(buf + field_start + newlen, ' ', field_end - field_start - newlen);
+    return 0;
+}
+
+static int sus_map_spoof_buffer(struct seq_file *seq,
+                                struct sus_map_spoof_rule *r)
+{
+    char *buf = *(char **)((char *)seq + 24);
+    unsigned long count = *(unsigned long *)((char *)seq + 40);
+    char *line;
+    char *p;
+    int pos;
+
+    if (!buf || count == 0)
+        return -1;
+
+    /* find the start of the current line: last '\n' before count, or buf start */
+    line = buf;
+    {
+        char *end = buf + count;
+        char *nl;
+        for (nl = end - 1; nl > buf; nl--) {
+            if (*nl == '\n') {
+                line = nl + 1;
+                break;
+            }
+        }
+    }
+
+    pos = 0;
+    p = line;
+
+    /* skip address range: 8-8 (17 chars including '-') */
+    if (pos + 17 > (int)count || p[8] != '-')
+        return -1;
+    pos += 17;
+    if (p[pos] != ' ')
+        return -1;
+    pos++;
+
+    /* spoof perms (4 chars: rwx+shared) */
+    if (r->need_to_spoof_prot) {
+        char perms[4];
+        perms[0] = (r->spoofed_prot & VM_READ) ? 'r' : '-';
+        perms[1] = (r->spoofed_prot & VM_WRITE) ? 'w' : '-';
+        perms[2] = (r->spoofed_prot & VM_EXEC) ? 'x' : '-';
+        perms[3] = (r->spoofed_prot & VM_MAYSHARE) ? 's' : '-';
+        map_rewrite_field(line, (int)count, pos, pos + 4, perms, 4);
+    }
+    pos += 4;
+    if (p[pos] != ' ')
+        return -1;
+    pos++;
+
+    /* spoof offset (8 chars) */
+    if (r->need_to_spoof_pgoff) {
+        char pgoff_str[9];
+        snprintf(pgoff_str, sizeof(pgoff_str), "%08llx", r->spoofed_pgoff);
+        map_rewrite_field(line, (int)count, pos, pos + 8, pgoff_str, 8);
+    }
+    pos += 8;
+    if (p[pos] != ' ')
+        return -1;
+    pos++;
+
+    /* spoof dev (5 chars: major:minor) */
+    if (r->need_to_spoof_dev) {
+        char dev_str[6];
+        snprintf(dev_str, sizeof(dev_str), "%02x:%02x",
+                 MAJOR(r->spoofed_dev), MINOR(r->spoofed_dev));
+        map_rewrite_field(line, (int)count, pos, pos + 5, dev_str, 5);
+    }
+    pos += 5;
+    if (p[pos] != ' ')
+        return -1;
+    pos++;
+
+    /* spoof ino (find end: next space or '\n') */
+    if (r->need_to_spoof_ino) {
+        char *ino_end = p + pos;
+        char ino_str[20];
+        int ino_len;
+        while (*ino_end && *ino_end != ' ' && *ino_end != '\n')
+            ino_end++;
+        ino_len = snprintf(ino_str, sizeof(ino_str), "%lu", r->spoofed_ino);
+        map_rewrite_field(line, (int)count, pos, (int)(ino_end - line),
+                          ino_str, ino_len);
+        pos = (int)(ino_end - line);
+    } else {
+        while (p[pos] && p[pos] != ' ' && p[pos] != '\n')
+            pos++;
+    }
+    if (p[pos] != ' ' && p[pos] != '\n')
+        return -1;
+    pos++;
+
+    /* spoof pathname (rest of line until '\n') */
+    if (r->need_to_spoof_pathname) {
+        char *path_start = line + pos;
+        char *path_end = strchr(path_start, '\n');
+        int path_len = r->spoofed_pathname[0] ?
+            (int)strnlen(r->spoofed_pathname, 256) : 0;
+        if (path_end)
+            path_end++;  /* include the newline */
+        if (path_len > 0)
+            memcpy(path_start, r->spoofed_pathname, path_len);
+    }
+
+    return 0;
+}
+
+/* kretprobe on show_map_vma() for spoofing */
+static int map_spoof_entry(struct kretprobe_instance *ri,
+                           struct pt_regs *regs)
+{
+    struct map_spoof_args *a = (struct map_spoof_args *)ri->data;
+
+    a->seq = (struct seq_file *)regs->regs[0];
+    a->vma = (struct vm_area_struct *)regs->regs[1];
+    return 0;
+}
+
+static int map_spoof_ret(struct kretprobe_instance *ri,
+                         struct pt_regs *regs)
+{
+    struct map_spoof_args *a = (struct map_spoof_args *)ri->data;
+    struct vm_area_struct *vma = a->vma;
+    struct inode *inode;
+    unsigned long ino, addr_size;
+    dev_t dev;
+    vm_flags_t flags;
+    unsigned long long pgoff;
+    int ri_idx;
+
+    if (!a->seq || !vma || (unsigned long)vma < PAGE_SIZE)
+        return 0;
+    if (!vma->vm_file)
+        return 0;
+
+    inode = file_inode(vma->vm_file);
+    if (!inode)
+        return 0;
+
+    ino = inode->i_ino;
+    dev = inode->i_sb->s_dev;
+    flags = vma->vm_flags;
+    addr_size = vma->vm_end - vma->vm_start;
+    pgoff = vma->vm_pgoff << PAGE_SHIFT;
+
+    ri_idx = sus_map_spoof_match(vma, ino, dev, addr_size, flags, pgoff);
+    if (ri_idx < 0)
+        return 0;
+
+    if (sus_map_spoof_buffer(a->seq, &spoof_rules[ri_idx]) == 0)
+        pr_info_ratelimited("sus_map: spoofed maps line (rule %d, ino=%lu)\n",
+                            ri_idx, ino);
+    return 0;
+}
+
+static struct kretprobe kr_map_spoof = {
+    .kp.symbol_name = "show_map_vma",
+    .entry_handler = map_spoof_entry,
+    .handler = map_spoof_ret,
+    .data_size = sizeof(struct map_spoof_args),
+    .maxactive = 16,
+};
+static bool kr_map_spoof_ok;
+
 /* ---- the read gate ----
  *
  * Upstream hides behind SUSFS_IS_INODE_SUS_MAP() -> susfs_is_current_proc_umounted_app()
@@ -742,6 +1071,19 @@ static int sus_map_register_probes(void)
         }
     }
 
+    /* maps-spoof kretprobe: optional, only armed when a spoof rule exists */
+    if (!kr_map_spoof_ok && nspoof > 0) {
+        int rc = register_kretprobe(&kr_map_spoof);
+
+        if (rc) {
+            susfs_krp_forget_addr(&kr_map_spoof);
+            pr_warn("sus_map: register_kretprobe(show_map_vma spoof) failed %d - spoof rules inert\n",
+                    rc);
+        } else {
+            kr_map_spoof_ok = true;
+        }
+    }
+
     map_registered = map_probe_armed[0];   /* show_map_vma is the required one */
     ret = map_registered ? 0 : first_err;
 
@@ -789,6 +1131,11 @@ void susfs_sus_map_exit(void)
         unregister_kretprobe(&kr_map_files);
         susfs_krp_forget_addr(&kr_map_files);
         kr_map_files_ok = false;
+    }
+    if (kr_map_spoof_ok) {
+        unregister_kretprobe(&kr_map_spoof);
+        susfs_krp_forget_addr(&kr_map_spoof);
+        kr_map_spoof_ok = false;
     }
     map_registered = false;
     mutex_unlock(&map_ctl_lock);
@@ -862,4 +1209,68 @@ out:
     if (copy_to_user(&((struct st_susfs_sus_map __user *)*arg)->err,
                      &info.err, sizeof(info.err)))
         pr_warn("sus_map supercall copy_to_user failed\n");
+}
+
+/* supercall: CMD_SUSFS_ADD_SUS_MAP_STATICALLY (rich maps-spoof rule) */
+void susfs_sus_map_static_supercall(void __user **arg)
+{
+    struct st_susfs_sus_map_static info = {0};
+    int i, rc;
+
+    if (copy_from_user(&info, (void __user *)*arg, sizeof(info))) {
+        info.err = -EFAULT;
+        goto out;
+    }
+    if (!susfs_abi_path_ok(info.spoofed_pathname,
+                           sizeof(info.spoofed_pathname))) {
+        info.err = -EINVAL;
+        goto out;
+    }
+    if (info.compare_mode < 1 || info.compare_mode > 4) {
+        info.err = -EINVAL;
+        goto out;
+    }
+
+    spin_lock(&spoof_table_lock);
+    for (i = 0; i < nspoof; i++) {
+        if (spoof_rules[i].active &&
+            spoof_rules[i].compare_mode == info.compare_mode &&
+            spoof_rules[i].target_ino == info.target_ino) {
+            spin_unlock(&spoof_table_lock);
+            info.err = -EEXIST;
+            goto out;
+        }
+    }
+    for (i = 0; i < SUS_MAP_SPOOF_MAX; i++) {
+        if (!spoof_rules[i].active) {
+            memcpy(&spoof_rules[i], &info,
+                   offsetof(struct st_susfs_sus_map_static, err));
+            spoof_rules[i].active = true;
+            if (i >= nspoof)
+                smp_store_release(&nspoof, i + 1);
+            spin_unlock(&spoof_table_lock);
+            SUSFS_LOGI("sus_map: added spoof rule mode=%d ino=%lu\n",
+                       info.compare_mode, info.target_ino);
+            /* arm the spoof kretprobe if not already up */
+            mutex_lock(&map_ctl_lock);
+            if (!kr_map_spoof_ok) {
+                rc = register_kretprobe(&kr_map_spoof);
+                if (rc) {
+                    susfs_krp_forget_addr(&kr_map_spoof);
+                    pr_warn("sus_map: register_kretprobe(show_map_vma spoof) failed %d\n", rc);
+                } else {
+                    kr_map_spoof_ok = true;
+                }
+            }
+            mutex_unlock(&map_ctl_lock);
+            info.err = 0;
+            goto out;
+        }
+    }
+    spin_unlock(&spoof_table_lock);
+    info.err = -ENOSPC;
+out:
+    if (copy_to_user(&((struct st_susfs_sus_map_static __user *)*arg)->err,
+                     &info.err, sizeof(info.err)))
+        pr_warn("sus_map static supercall copy_to_user failed\n");
 }

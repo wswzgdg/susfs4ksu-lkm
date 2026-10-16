@@ -41,6 +41,11 @@
 #define CMD_SUSFS_SUS_SU                        0x60000 /* deprecated */
 #define CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING       0x60010
 #define CMD_SUSFS_ADD_SUS_MAP                   0x60020
+#define CMD_SUSFS_ADD_SUS_MAP_STATICALLY        0x60021
+#define CMD_SUSFS_ADD_SUS_MEMFD                 0x60030
+#define CMD_SUSFS_DEL_SUS_MEMFD                 0x60031
+#define CMD_SUSFS_ADD_SUS_PROC_FD_LINK          0x60040
+#define CMD_SUSFS_DEL_SUS_PROC_FD_LINK          0x60041
 
 /* 126 is a USERSPACE-side sentinel the kernel never produces: the ksu_susfs C tool pre-seeds payload.err with it and
  * prints "SUSFS operation not supported, please enable it in kernel" when the field is STILL 126 after the syscall,
@@ -81,6 +86,35 @@ struct st_susfs_sus_path {
 
 struct st_susfs_sus_map {
 	char target_pathname[SUSFS_MAX_LEN_PATHNAME];
+	int err;
+};
+
+/* Upstream's static maps-spoof rule: compare_mode selects how target_ino is
+ * matched (1 = plain ino, 2 = ino+prot+addr_size+pgoff with optional
+ * isolated_entry VMA-adjacency check, 3 = prev/next VMA ino for non-file
+ * entries, 4 = is_file+dev+pgoff+prot+addr_size); need_to_spoof_* flags select
+ * which output fields to rewrite.  Field order matches upstream so a prebuilt
+ * ksu_susfs tool can drive this LKM unmodified. */
+struct st_susfs_sus_map_static {
+	int is_statically;
+	int compare_mode;
+	int is_isolated_entry;
+	int is_file;
+	unsigned long target_ino;
+	dev_t target_dev;
+	unsigned long long target_pgoff;
+	unsigned long target_prot;
+	unsigned long target_addr_size;
+	char spoofed_pathname[SUSFS_MAX_LEN_PATHNAME];
+	unsigned long spoofed_ino;
+	dev_t spoofed_dev;
+	unsigned long long spoofed_pgoff;
+	unsigned long spoofed_prot;
+	int need_to_spoof_pathname;
+	int need_to_spoof_ino;
+	int need_to_spoof_dev;
+	int need_to_spoof_pgoff;
+	int need_to_spoof_prot;
 	int err;
 };
 
@@ -172,6 +206,19 @@ struct st_susfs_variant {
 
 struct st_susfs_enabled_features {
 	char enabled_features[SUSFS_ENABLED_FEATURES_SIZE];
+	int err;
+};
+
+/* memfd name blocking */
+struct st_susfs_sus_memfd {
+	char target_pathname[SUSFS_MAX_LEN_PATHNAME];
+	int err;
+};
+
+/* proc_fd_link spoofing: /proc/self/fd/<fd> symlink target */
+struct st_susfs_sus_proc_fd_link {
+	char target_link_name[SUSFS_MAX_LEN_PATHNAME];
+	char spoofed_link_name[SUSFS_MAX_LEN_PATHNAME];
 	int err;
 };
 
