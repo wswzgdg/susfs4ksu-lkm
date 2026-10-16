@@ -370,8 +370,8 @@ static void __init susfs_abi_layout_check(void)
 	BUILD_BUG_ON(sizeof(struct st_susfs_sus_memfd) != 260);
 	BUILD_BUG_ON(offsetof(struct st_susfs_sus_memfd, err) != 256);
 
-	BUILD_BUG_ON(sizeof(struct st_susfs_sus_proc_fd_link) != 520);
-	BUILD_BUG_ON(offsetof(struct st_susfs_sus_proc_fd_link, err) != 516);
+	BUILD_BUG_ON(sizeof(struct st_susfs_sus_proc_fd_link) != 516);
+	BUILD_BUG_ON(offsetof(struct st_susfs_sus_proc_fd_link, err) != 512);
 
 	BUILD_BUG_ON(sizeof(struct st_susfs_sus_map_static) != 368);
 	BUILD_BUG_ON(offsetof(struct st_susfs_sus_map_static, is_statically) != 0);
