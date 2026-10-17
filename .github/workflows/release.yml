@@ -80,11 +80,19 @@ jobs:
             gh release "${args[@]}"
           fi
 
+      - name: Compress .ko files with gzip
+        run: |
+          set -euo pipefail
+          for f in ko/susfs_guard_lkm-*.ko; do
+            gzip -9 "$f"
+          done
+          ls -la ko/
+
       - name: Upload .ko assets
         run: |
           set -euo pipefail
           TAG="${{ inputs.tag }}"
-          gh release upload "$TAG" ko/susfs_guard_lkm-*.ko --repo "${{ github.repository }}" --clobber
+          gh release upload "$TAG" ko/susfs_guard_lkm-*.ko.gz --repo "${{ github.repository }}" --clobber
           if [ -f bin/susfs_insmod ]; then
             gh release upload "$TAG" bin/susfs_insmod --repo "${{ github.repository }}" --clobber
           fi
@@ -95,6 +103,10 @@ jobs:
           set -euo pipefail
           TAG="${{ inputs.tag }}"
           pip install --quiet python-dateutil
+          # decompress .ko.gz back to .ko for the module ZIP
+          for f in ko/susfs_guard_lkm-*.ko.gz; do
+            [ -f "$f" ] && gunzip -f "$f"
+          done
           python tools/pack_module.py --ko-dir ko --insmod bin/susfs_insmod \
             --tag "$TAG" --out "dist/susfs_guard_lkm-module-$TAG-arm64.zip"
           gh release upload "$TAG" dist/*.zip --repo "${{ github.repository }}" --clobber
