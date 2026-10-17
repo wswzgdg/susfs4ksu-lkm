@@ -646,6 +646,8 @@ static int hide_syms_m_show_pre(struct kprobe *kp, struct pt_regs *regs)
 	 * name decides which m_show this is. */
 	if (!m || (modules_op_target && m->op != modules_op_target) || !p)
 		return 0;
+	if (!susfs_hide_modules_active())
+		return 0;
 
 	/* Same recovery the kernel's own m_show() does: the iterator hands over &module->list, so the module is one offset away. */
 	mod = (struct module *)((char *)p - offsetof(struct module, list));
